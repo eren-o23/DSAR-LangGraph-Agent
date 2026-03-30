@@ -17,9 +17,18 @@ def main() -> int:
     parser.add_argument("--text", required=True, help="Incoming DSAR request text.")
     parser.add_argument("--thread-id", default="triage_cli", help="LangGraph thread id for checkpointing/resume.")
     parser.add_argument("--auto-approve", action="store_true", help="Auto-approve at human checkpoint (no prompt).")
+    parser.add_argument("--use-llm", action="store_true", help="Use Ollama (OpenAI-compatible) for triage agents.")
+    parser.add_argument("--model", default="llama3.1", help="Ollama model name (default: llama3.1).")
+    parser.add_argument("--base-url", default="http://localhost:11434/v1", help="Ollama OpenAI-compatible base URL.")
+    parser.add_argument("--api-key", default="ollama", help="API key for OpenAI SDK (Ollama ignores; required by SDK).")
     args = parser.parse_args()
 
-    app = build_triage_graph()
+    llm_config = {
+        "model": args.model,
+        "base_url": args.base_url,
+        "api_key": args.api_key,
+    }
+    app = build_triage_graph(use_llm=args.use_llm, llm_config=llm_config if args.use_llm else None)
     config = {"configurable": {"thread_id": args.thread_id}}
 
     try:
