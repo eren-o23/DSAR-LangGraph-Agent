@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dsar-langgraph-agent"
+version = "0.1.0"
+description = "LangGraph DSAR triage workflow with human-in-the-loop interrupt"
+requires-python = ">=3.9"
+dependencies = [
+  "pydantic>=2.5.0",
+  "langgraph>=0.2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

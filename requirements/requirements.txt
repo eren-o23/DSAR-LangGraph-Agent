@@ -1,0 +1,5 @@
+pydantic>=2.5.0
+langgraph>=0.2.0
+
+# Dev/test
+pytest>=7.4.0
