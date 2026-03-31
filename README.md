@@ -1,154 +1,161 @@
-## DSAR LangGraph Agent
+# DSAR LangGraph Agent
 
-A **governed AI workflow** for triaging Data Subject Access Requests (DSARs), built with **LangGraph** and powered by **open-source LLMs via Ollama**.
-
-This project demonstrates how AI agents can be safely integrated into compliance workflows using:
-- structured outputs
-- deterministic fallbacks
-- human-in-the-loop checkpoints
-- full interrupt + resume capability
+A governed AI workflow for triaging Data Subject Access Requests (DSARs), built with LangGraph and powered by open-source LLMs via Ollama.
 
 ---
 
-## Why this matters
+## Why this exists
 
-Handling DSARs is:
-- time-consuming
-- error-prone
-- legally sensitive
+Under GDPR and similar regulations, organisations must respond to DSARs within strict deadlines. In practice, triage is slow, inconsistent, and handled manually: a person reads the request, works out what type it is, figures out which systems are involved, and flags anything legally complicated. That process is time-consuming, error-prone, and hard to audit.
 
-This system shows how to:
-- automate **triage decisions with AI**
-- maintain **auditability and control**
-- ensure **humans stay in the loop for critical decisions**
+This project automates that triage step while keeping a human in the loop before anything is finalised. It is designed for regulated environments: every decision is structured, every fallback is deterministic, and no action is taken without explicit approval.
 
 ---
 
 ## How it works
 
-The workflow is implemented as a **LangGraph state machine**:
+The workflow runs as a LangGraph state machine. Each stage reads from and writes to a shared state object, which is persisted across the human checkpoint.
 
-1. **ClassificationAgent**
-   - Determines request type (access / deletion / portability)
+```
+DSAR request text
+       │
+       ▼
+ClassificationAgent   →  access / deletion / portability
+       │
+       ▼
+ScopingAgent          →  systems that need to be queried
+       │
+       ▼
+RiskFlagAgent         →  third-party data, minors, conflicting legal basis
+       │
+       ▼
+── interrupt() ──     →  execution pauses; human reviews full state
+       │
+  approve / revise
+       │
+       ▼
+Finalised triage output
+```
 
-2. **ScopingAgent**
-   - Identifies relevant systems and required data
+**ClassificationAgent** reads the request and categorises it into one of three DSAR types.
 
-3. **RiskFlagAgent**
-   - Flags legal/compliance risks (e.g. third-party data, minors)
+**ScopingAgent** maps the request type to the systems that would need to be queried — CRM, data warehouse, email platform, and so on.
 
-4. **Human Review (interrupt checkpoint)**
-   - Execution pauses for approval
-   - Operator can review outputs before continuing
+**RiskFlagAgent** checks for anything that would complicate the response: third-party data involved, request from a minor, conflicting legal basis, or ambiguous identity.
 
-5. **Resume execution**
-   - Continues from the exact same state after approval
+**Human review checkpoint** pauses execution using LangGraph's `interrupt()` mechanism. The full triage state is surfaced to an operator, who can approve or return it with feedback. The graph resumes from exactly the same state.
 
 ---
 
-## LLM + Deterministic Hybrid Design
+## Demo
 
-The system supports two modes:
+```bash
+$ python -m dsar_langgraph_agent.cli \
+    --text "Please delete my account and all personal data you hold about me."
 
-### Deterministic (default)
-- rule-based logic
-- fully predictable
-- used as a fallback
+[ClassificationAgent]  type=deletion  confidence=high
+[ScopingAgent]         systems=[CRM, email_platform, data_warehouse]
+[RiskFlagAgent]        flags=[]  risk_level=low
 
-### LLM-powered (Ollama)
-- uses open models (e.g. `llama3.1`, `qwen`)
-- improves classification, scoping, and risk detection
+── CHECKPOINT: human review required ──
+Triage output ready for approval. Press [a] to approve or [r] to revise.
 
-### Safety mechanism
-If the LLM:
-- fails
-- returns invalid JSON
-- produces low-quality output
+> a
 
-the system **automatically falls back to deterministic logic**
+[APPROVED] Triage finalised. Output written to state.
+```
 
-This ensures:
-- reliability
-- auditability
-- production-safe behaviour
+---
+
+## LLM + deterministic hybrid design
+
+Most AI workflow tools treat the LLM as the source of truth. This system treats it as an enhancement to deterministic logic — not a replacement for it.
+
+In **deterministic mode** (the default), triage decisions are made by rule-based logic: fast, fully predictable, and auditable. In **LLM mode**, an open model running locally via Ollama improves classification and risk detection on ambiguous requests.
+
+If the LLM fails, returns invalid JSON, or produces output that fails schema validation, the system falls back to deterministic logic automatically. No silent failures, no hallucinated decisions.
+
+This makes the system safe to run in a regulated environment whether or not a local model is available.
 
 ---
 
 ## Project structure
 
-- `src/dsar_langgraph_agent/triage_schemas.py`: Pydantic schemas for triage state
-- `src/dsar_langgraph_agent/triage_agents.py`: deterministic agent implementations
-- `src/dsar_langgraph_agent/triage_llm_agents.py`: LLM-powered agent implementations
-- `src/dsar_langgraph_agent/ollama_client.py`: OpenAI-compatible Ollama client
-- `src/dsar_langgraph_agent/triage_graph.py`: LangGraph workflow + interrupt checkpoint
-- `src/dsar_langgraph_agent/cli.py`: CLI runner with resume capability
-- `tests/test_triage_graph.py`: tests (including interrupt/resume validation)
+```
+src/dsar_langgraph_agent/
+├── triage_schemas.py      Pydantic schemas for triage state
+├── triage_agents.py       Deterministic agent implementations
+├── triage_llm_agents.py   LLM-powered agent implementations
+├── ollama_client.py       OpenAI-compatible Ollama client
+├── triage_graph.py        LangGraph workflow + interrupt checkpoint
+└── cli.py                 CLI runner with resume capability
+
+tests/
+└── test_triage_graph.py   Tests including interrupt/resume validation
+```
 
 ---
 
 ## Setup
 
-    python -m venv .venv
-    source .venv/bin/activate
-    python -m pip install -r requirements/requirements.txt
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements/requirements.txt
+```
 
 ---
 
-## Run
+## Running the agent
 
-### Deterministic mode (default)
+**Deterministic mode**
 
-    python -m dsar_langgraph_agent.cli --text "Please delete my account and remove my personal data."
+```bash
+python -m dsar_langgraph_agent.cli \
+  --text "Please delete my account and remove my personal data."
+```
 
----
+**LLM mode (requires Ollama)**
 
-### LLM mode (Ollama)
+```bash
+ollama serve
+ollama pull llama3.1
 
-1) Start Ollama and pull a model:
-
-    ollama serve
-    ollama pull llama3.1
-
-2) Run with LLM enabled:
-
-    python -m dsar_langgraph_agent.cli --use-llm --model llama3.1 --text "Please delete my account and remove my personal data."
-
----
-
-## Run tests
-
-    pytest -q
-
-Optional Ollama integration test:
-
-    RUN_OLLAMA_TESTS=1 pytest -q
+python -m dsar_langgraph_agent.cli \
+  --use-llm --model llama3.1 \
+  --text "Please delete my account and remove my personal data."
+```
 
 ---
 
-## Key features
+## Tests
 
-- LangGraph-based stateful agent workflow
-- Interrupt + resume (human-in-the-loop)
-- Structured JSON outputs (no hallucinated actions)
-- LLM + deterministic fallback architecture
-- Open-model support via Ollama
-- CLI interface for quick testing
+```bash
+pytest -q
+```
 
----
+With Ollama integration tests:
 
-## Hackathon focus
-
-This project demonstrates:
-- practical AI agent orchestration (not just chatbots)
-- safe deployment patterns for AI in regulated domains
-- integration of open models into real workflows
+```bash
+RUN_OLLAMA_TESTS=1 pytest -q
+```
 
 ---
 
-## Future improvements
+## What's next
 
-- Web dashboard for DSAR case management
-- Integration with real data sources (CRM, support tools)
-- Audit log persistence (PostgreSQL / event sourcing)
-- Confidence scoring + escalation policies
-- Multi-language request handling
+The next phase extends the project with two capabilities developed in parallel.
+
+**Long-term memory** will allow the agents to learn from past DSARs. If a particular data controller consistently involves third-party processors, the RiskFlagAgent will surface that pattern rather than treating every request from scratch.
+
+**RAG over policy documents** will ground the ScopingAgent in your actual data inventory and records of processing activities, rather than having system knowledge baked into the prompt. This is more maintainable and far more auditable for a real compliance use case.
+
+Both are being built as part of preparation for the AMD × lablab.ai hackathon (AI Agents & Agentic Workflows track).
+
+---
+
+## Built with
+
+- [LangGraph](https://github.com/langchain-ai/langgraph)
+- [Ollama](https://ollama.com)
+- [Pydantic](https://docs.pydantic.dev)
