@@ -46,7 +46,7 @@ The workflow is implemented as a **LangGraph state machine**:
 
 ---
 
-## 🤖 LLM + Deterministic Hybrid Design
+## LLM + Deterministic Hybrid Design
 
 The system supports two modes:
 
