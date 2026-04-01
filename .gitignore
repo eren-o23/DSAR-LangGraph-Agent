@@ -1,0 +1,36 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.class
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Unit test / coverage reports
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment variables (Crucial if you ever add API keys!)
+.env
+
+# Databases & Local Storage (Used by LangGraph Checkpointers)
+*.db
+*.sqlite
+checkpoint_*.json
+
+# Operating System files
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/

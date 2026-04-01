@@ -10,11 +10,14 @@ def test_triage_graph_interrupt_and_resume():
 
     request_text = "Please delete my account and remove my personal data. I might have an old account too."
 
-    try:
-        app.invoke({"request_text": request_text}, config=config)
-        assert False, "Expected human checkpoint interrupt"
-    except Exception as e:
-        assert "interrupt" in e.__class__.__name__.lower() or hasattr(e, "value") or hasattr(e, "payload")
+    # First invoke should pause at human checkpoint (no 'output' yet).
+    result = app.invoke({"request_text": request_text}, config=config)
+    assert "output" not in result
+
+    # There should be at least one interrupt recorded in state.
+    state = app.get_state(config)  # type: ignore[attr-defined]
+    interrupts = getattr(state, "interrupts", None)
+    assert interrupts
 
     from langgraph.types import Command
 
@@ -48,11 +51,14 @@ def test_triage_graph_llm_mode_interrupt_and_resume():
 
     request_text = "I want a copy of all data you have on me, including support chats. Also delete anything you can."
 
-    try:
-        app.invoke({"request_text": request_text}, config=config)
-        assert False, "Expected human checkpoint interrupt"
-    except Exception as e:
-        assert "interrupt" in e.__class__.__name__.lower() or hasattr(e, "value") or hasattr(e, "payload")
+    # First invoke should pause at human checkpoint (no 'output' yet).
+    result = app.invoke({"request_text": request_text}, config=config)
+    assert "output" not in result
+
+    # There should be at least one interrupt recorded in state.
+    state = app.get_state(config)  # type: ignore[attr-defined]
+    interrupts = getattr(state, "interrupts", None)
+    assert interrupts
 
     from langgraph.types import Command
 
