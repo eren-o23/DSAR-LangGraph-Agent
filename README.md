@@ -1,6 +1,6 @@
 # DSAR LangGraph Agent
 
-A governed AI workflow for triaging Data Subject Access Requests (DSARs), built with LangGraph and powered by open-source LLMs via Ollama.
+A governed AI workflow for triaging Data Subject Access Requests (DSARs), built with LangGraph. Runs on a local LLM via Ollama or the OpenAI API.
 
 ---
 
@@ -8,74 +8,94 @@ A governed AI workflow for triaging Data Subject Access Requests (DSARs), built 
 
 Under GDPR and similar regulations, organisations must respond to DSARs within strict deadlines. In practice, triage is slow, inconsistent, and handled manually: a person reads the request, works out what type it is, figures out which systems are involved, and flags anything legally complicated. That process is time-consuming, error-prone, and hard to audit.
 
-This project automates that triage step while keeping a human in the loop before anything is finalised. It is designed for regulated environments: every decision is structured, every fallback is deterministic, and no action is taken without explicit approval.
+This project automates that triage step while keeping a human in the loop before anything is finalised. Every decision is structured, every fallback is deterministic, and no action is taken without explicit approval.
 
 ---
 
 ## How it works
 
-The workflow runs as a LangGraph state machine. Each stage reads from and writes to a shared state object, which is persisted across the human checkpoint.
+The workflow runs as a LangGraph state machine. Each stage reads from and writes to a shared state object, persisted across the human checkpoint.
 
 ```
 DSAR request text
        │
        ▼
-ClassificationAgent   →  access / deletion / portability
+ClassificationAgent   →  access / deletion / portability / unknown
+  ↑ episodic memory        (retrieves similar past approved decisions as precedents)
        │
        ▼
 ScopingAgent          →  systems that need to be queried
+  ↑ semantic memory        (authorised data inventory — must cite data categories)
        │
        ▼
 RiskFlagAgent         →  third-party data, minors, conflicting legal basis
        │
        ▼
-── interrupt() ──     →  execution pauses; human reviews full state
+── interrupt() ──     →  execution pauses; human reviews full state + audit trail
        │
   approve / revise
        │
        ▼
-Finalised triage output
+Finalised output + episode persisted to store
 ```
 
-**ClassificationAgent** reads the request and categorises it into one of three DSAR types.
+**ClassificationAgent** categorises the request into one of three DSAR types. In LLM mode, it first retrieves up to 2 similar past approved decisions from the episode store and injects them as few-shot precedents.
 
-**ScopingAgent** maps the request type to the systems that would need to be queried — CRM, data warehouse, email platform, and so on.
+**ScopingAgent** maps the request to the internal systems that need to be queried. In LLM mode, it consults the authorised data inventory and must cite the specific data category from the inventory that justifies each system's inclusion. It cannot reference systems outside the inventory.
 
-**RiskFlagAgent** checks for anything that would complicate the response: third-party data involved, request from a minor, conflicting legal basis, or ambiguous identity.
+**RiskFlagAgent** checks for complicating factors: third-party data, requests from minors, conflicting legal basis, unclear identity, or ambiguous scope.
 
-**Human review checkpoint** pauses execution using LangGraph's `interrupt()` mechanism. The full triage state is surfaced to an operator, who can approve or return it with feedback. The graph resumes from exactly the same state.
+**Human review checkpoint** pauses execution using LangGraph's `interrupt()` mechanism. The operator sees the full proposed decision, rationale, and reasoning history, then approves or returns it with correction feedback. If revised, the LLM agents re-run with the feedback injected into the prompt.
+
+**Episode store** — on approval, the full triage episode (request, decisions, reasoning history) is persisted to the LangGraph store and becomes available as a precedent for future requests.
 
 ---
 
-## Demo
+## Memory architecture
 
-```bash
-$ python -m dsar_langgraph_agent.cli \
-    --text "Please delete my account and all personal data you hold about me."
+The system uses two types of long-term agent memory:
 
-[ClassificationAgent]  type=deletion  confidence=high
-[ScopingAgent]         systems=[CRM, email_platform, data_warehouse]
-[RiskFlagAgent]        flags=[]  risk_level=low
+**Semantic memory** is the verified data inventory: the set of internal systems the agent is authorised to reference, with their data categories, descriptions, and retention periods. The ScopingAgent is grounded in this inventory and cannot fabricate systems outside it.
 
-── CHECKPOINT: human review required ──
-Triage output ready for approval. Press [a] to approve or [r] to revise.
-
-> a
-
-[APPROVED] Triage finalised. Output written to state.
-```
+**Episodic memory** is a case history of past approved triage decisions. Before classifying a new request, the ClassificationAgent retrieves the most similar past episodes and uses them as examples — like a compliance team consulting their own precedents. Switching to a vector-backed store activates true semantic similarity search with no code changes.
 
 ---
 
 ## LLM + deterministic hybrid design
 
-Most AI workflow tools treat the LLM as the source of truth. This system treats it as an enhancement to deterministic logic — not a replacement for it.
+In **deterministic mode** (the default), all triage decisions are made by rule-based logic: fast, fully predictable, and auditable without any model dependency.
 
-In **deterministic mode** (the default), triage decisions are made by rule-based logic: fast, fully predictable, and auditable. In **LLM mode**, an open model running locally via Ollama improves classification and risk detection on ambiguous requests.
+In **LLM mode**, an LLM improves classification and risk detection on ambiguous requests. If the LLM fails — timeout, invalid JSON, or schema validation failure — the system falls back to deterministic logic automatically and records the failure in a structured `LLMFallbackWarning`. No silent failures, no hallucinated decisions.
 
-If the LLM fails, returns invalid JSON, or produces output that fails schema validation, the system falls back to deterministic logic automatically. No silent failures, no hallucinated decisions.
+---
 
-This makes the system safe to run in a regulated environment whether or not a local model is available.
+## Demo
+
+```
+$ python -m dsar_langgraph_agent --text "Delete my account" --openai --auto-approve
+
+────────────────────  DSAR Triage Report — Review pass #1  ────────────────────
+
+  Request Type    │ DELETION  (confidence: 100%)
+  Rationale       │ The request explicitly states to delete the account.
+  Scoped Systems  │ crm, production_sql
+  Scope Rationale │ CRM holds the master identity record and account status.
+                  │ Production SQL holds purchase history and order IDs.
+  Risk Flags      │ ✓ No risk flags
+
+  🤖 [1/3] classification_agent_llm → request_type=deletion, confidence=1.0
+  🤖 [2/3] scoping_agent_llm        → systems=['crm', 'production_sql']
+  🤖 [3/3] risk_flag_agent_llm      → flags=[]
+
+Auto-approving…
+
+  ✅  Final DSAR Triage Summary
+  Request Type    │ DELETION  (confidence: 100%)
+  Scoped Systems  │ crm, production_sql
+  Risk Flags      │ ✓ None
+  Audit Trail     │ 4 reasoning step(s) recorded
+  Episode ID      │ b459b449-…  (persisted to store)
+```
 
 ---
 
@@ -83,15 +103,22 @@ This makes the system safe to run in a regulated environment whether or not a lo
 
 ```
 src/dsar_langgraph_agent/
-├── triage_schemas.py      Pydantic schemas for triage state
+├── triage_schemas.py      Pydantic schemas for all triage state
 ├── triage_agents.py       Deterministic agent implementations
-├── triage_llm_agents.py   LLM-powered agent implementations
-├── ollama_client.py       OpenAI-compatible Ollama client
-├── triage_graph.py        LangGraph workflow + interrupt checkpoint
-└── cli.py                 CLI runner with resume capability
+├── triage_llm_agents.py   LLM-powered agents with deterministic fallback
+├── ollama_client.py       OpenAI-compatible LLM client (Ollama or OpenAI API)
+├── triage_graph.py        LangGraph workflow, memory stores, interrupt checkpoint
+├── cli.py                 CLI runner with human review loop
+└── data/
+    └── data_inventory.json  Authorised system inventory (semantic memory)
 
 tests/
-└── test_triage_graph.py   Tests including interrupt/resume validation
+├── test_triage_graph.py        Graph flow and interrupt/resume
+├── test_llm_agent_fallback.py  Fallback logic for all three LLM agents
+├── test_episodic_memory.py     Episode persistence and retrieval
+├── test_episodic_retrieval.py  Precedent injection into classification
+├── test_data_inventory.py      Inventory loading and scoping constraints
+└── test_reasoning_history.py   Audit trail correctness
 ```
 
 ---
@@ -111,20 +138,32 @@ pip install -r requirements/requirements.txt
 **Deterministic mode**
 
 ```bash
-python -m dsar_langgraph_agent.cli \
+python -m dsar_langgraph_agent \
   --text "Please delete my account and remove my personal data."
 ```
 
-**LLM mode (requires Ollama)**
+**LLM mode — local (requires Ollama)**
 
 ```bash
 ollama serve
 ollama pull llama3.1
 
-python -m dsar_langgraph_agent.cli \
+python -m dsar_langgraph_agent \
   --use-llm --model llama3.1 \
   --text "Please delete my account and remove my personal data."
 ```
+
+**LLM mode — OpenAI API**
+
+```bash
+export OPENAI_API_KEY=your_key_here
+
+python -m dsar_langgraph_agent \
+  --openai \
+  --text "Please delete my account and remove my personal data."
+```
+
+Use `--openai-model` to override the model (default: `gpt-4o-mini`). Use `--auto-approve` to skip the interactive human checkpoint.
 
 ---
 
@@ -134,23 +173,15 @@ python -m dsar_langgraph_agent.cli \
 pytest -q
 ```
 
-With Ollama integration tests:
-
-```bash
-RUN_OLLAMA_TESTS=1 pytest -q
-```
-
 ---
 
 ## What's next
 
-The next phase extends the project with two capabilities developed in parallel.
+- **Vector store backend** — swap `InMemoryStore` for a vector-backed store (e.g. `AsyncPostgresStore` with an embedder) to enable true semantic similarity search over past episodes. The retrieval code requires no changes.
+- **RAG over policy documents** — ground the agents in your actual Records of Processing Activities and retention schedules, rather than a static inventory file.
+- **API endpoint** — expose the workflow as a REST API for integration into a broader compliance platform.
 
-**Long-term memory** will allow the agents to learn from past DSARs. If a particular data controller consistently involves third-party processors, the RiskFlagAgent will surface that pattern rather than treating every request from scratch.
-
-**RAG over policy documents** will ground the ScopingAgent in your actual data inventory and records of processing activities, rather than having system knowledge baked into the prompt. This is more maintainable and far more auditable for a real compliance use case.
-
-Both are being built as part of preparation for the AMD × lablab.ai hackathon (AI Agents & Agentic Workflows track).
+Being built as part of preparation for the AMD × lablab.ai hackathon (AI Agents & Agentic Workflows track).
 
 ---
 
@@ -158,4 +189,5 @@ Both are being built as part of preparation for the AMD × lablab.ai hackathon (
 
 - [LangGraph](https://github.com/langchain-ai/langgraph)
 - [Ollama](https://ollama.com)
+- [OpenAI Python SDK](https://github.com/openai/openai-python)
 - [Pydantic](https://docs.pydantic.dev)
