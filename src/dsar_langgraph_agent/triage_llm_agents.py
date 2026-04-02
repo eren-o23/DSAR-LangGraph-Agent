@@ -26,6 +26,11 @@ from dsar_langgraph_agent.triage_agents import (
 )
 from dsar_langgraph_agent.triage_state import TriageState
 
+try:
+    from langgraph.config import get_store as _get_store
+except ImportError:  # pragma: no cover — older LG versions
+    _get_store = None  # type: ignore[assignment]
+
 log = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
@@ -37,10 +42,29 @@ T = TypeVar("T", bound=BaseModel)
 
 @dataclass(frozen=True)
 class LLMNodeConfig:
-    base_url: str = "http://localhost:11434/v1"
+    base_url: Optional[str] = "http://localhost:11434/v1"  # None → use OpenAI's default endpoint
     api_key: str = "ollama"
     model: str = "llama3.1"
-    timeout_s: float = 30.0
+    timeout_s: float = 60.0
+
+    @classmethod
+    def from_env(cls) -> "LLMNodeConfig":
+        """Auto-detect provider from environment variables.
+
+        - If ``OPENAI_API_KEY`` is set, return a config that targets the real
+          OpenAI API using ``gpt-4o-mini`` (cheap, fast — ideal for quick testing).
+        - Otherwise return the default Ollama config.
+        """
+        import os
+        openai_key = os.environ.get("OPENAI_API_KEY")
+        if openai_key:
+            return cls(
+                base_url=None,       # OpenAI SDK will use https://api.openai.com/v1
+                api_key=openai_key,
+                model="gpt-4o-mini",  # cheap + fast for testing
+                timeout_s=30.0,
+            )
+        return cls()  # default: Ollama
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +189,22 @@ def _run_with_fallback(
 
 def classification_agent_llm(state: TriageState, *, cfg: LLMNodeConfig) -> TriageState:
     """
-    LLM-powered classification with deterministic fallback.
+    LLM-powered classification with deterministic fallback and episodic retrieval.
+
+    **Episodic retrieval** — At the start of every call the node queries the
+    LangGraph Store for up to 2 previously approved triage episodes whose
+    ``request_text`` is similar to the current request.  These are surfaced to
+    the LLM as few-shot examples so it can anchor its decision on real
+    precedents rather than reasoning from scratch.
+
+    ``store.search()`` is called with ``query=<request_text>`` and ``limit=2``.
+    On plain ``InMemoryStore`` (no embedding backend) the query string is
+    accepted but silently ignored; results are returned by insertion order.
+    Switching to a vector-backed store (e.g. ``AsyncPostgresStore`` with an
+    embedder) makes the semantic search active without any code changes here.
+
+    If the store contains no episodes yet the function handles an empty list
+    gracefully and the prompt is unchanged.
 
     Failure modes handled:
     - Ollama timeout / connection error  → cause=``timeout``
@@ -177,8 +216,37 @@ def classification_agent_llm(state: TriageState, *, cfg: LLMNodeConfig) -> Triag
     The reasoning history will contain two consecutive entries for this agent:
     one ``llm_fallback`` entry and one ``deterministic`` entry.
     """
+    from dsar_langgraph_agent.triage_graph import _EPISODE_NAMESPACE
+
     req = state.get("request_text", "")
     human_feedback = state.get("human_feedback")
+
+    # ------------------------------------------------------------------
+    # Episodic retrieval — fetch up to 2 similar precedents from store
+    # ------------------------------------------------------------------
+    matched_precedents: List[dict] = []
+    try:
+        ep_store = _get_store() if _get_store is not None else None
+        if ep_store is not None:
+            hits = ep_store.search(
+                _EPISODE_NAMESPACE,
+                query=req,   # semantic search when backed by a vector store;
+                limit=2,     # silently ignored as ranking on plain InMemoryStore
+            )
+            for hit in hits:
+                v = hit.value or {}
+                classification_dict = v.get("classification") or {}
+                final_decision = classification_dict.get("request_type", "unknown")
+                matched_precedents.append({
+                    "request_text":  v.get("request_text", ""),
+                    "final_decision": final_decision,
+                })
+    except Exception as retrieval_exc:  # never crash the node due to store issues
+        log.warning(
+            "[classification_agent_llm] Episodic retrieval failed, continuing without precedents: %s",
+            retrieval_exc,
+        )
+        matched_precedents = []
 
     # Run deterministic agent first — it handles human_feedback correction and
     # clears the field, giving us a fully-prepared fallback result + rationale.
@@ -194,6 +262,19 @@ def classification_agent_llm(state: TriageState, *, cfg: LLMNodeConfig) -> Triag
         "No markdown, no code fences, no extra keys."
     )
     user_prompt = f"DSAR request text:\n{req}\n"
+
+    # Inject precedents as few-shot context when available.
+    if matched_precedents:
+        examples = "\n".join(
+            f'  - Request: "{p["request_text"]}" → Decision: {p["final_decision"]}'
+            for p in matched_precedents
+        )
+        user_prompt += (
+            "\n--- Relevant precedents from approved past decisions ---\n"
+            "Use these as guidance, but make an independent decision based on the current request:\n"
+            f"{examples}\n"
+            "--- End of precedents ---\n"
+        )
 
     if human_feedback:
         user_prompt += (
@@ -278,14 +359,46 @@ def scoping_agent_llm(state: TriageState, *, cfg: LLMNodeConfig) -> TriageState:
     deterministic_result: ScopingResult = scoping_agent(state)["scope"]
     classification = state["classification"].model_dump()
 
+    # ------------------------------------------------------------------
+    # Semantic Memory — fetch authorized data inventory from store
+    # ------------------------------------------------------------------
+    system_catalog_lines: List[str] = []
+    try:
+        ep_store = _get_store() if _get_store is not None else None
+        if ep_store is not None:
+            from dsar_langgraph_agent.triage_graph import _INVENTORY_NAMESPACE
+            hits = ep_store.search(_INVENTORY_NAMESPACE)
+            for hit in hits:
+                v = hit.value or {}
+                categories = ", ".join(v.get("data_categories", []))
+                system_catalog_lines.append(
+                    f"System ID: {v.get('id')}\n"
+                    f"Name: {v.get('name')}\n"
+                    f"Description: {v.get('description')}\n"
+                    f"Data Categories: {categories}\n"
+                    f"Retention Period: {v.get('retention_period')}"
+                )
+    except Exception as retrieval_exc:  # never crash the node due to store issues
+        log.warning(
+            "[scoping_agent_llm] Inventory retrieval failed, continuing without catalog: %s",
+            retrieval_exc,
+        )
+
+    system_catalog = "\n\n".join(system_catalog_lines)
+
     system_prompt = (
-        "You are a DSAR triage scoping agent.\n"
+        "You are a Data Discovery Agent. You must ONLY select systems from the AUTHORIZED DATA INVENTORY.\n"
         "Return ONLY valid JSON matching this schema:\n"
         '{ "systems": ["..."], "rationale": "..." }\n'
         "Rules:\n"
         "- systems must be a list of short system identifiers (snake_case).\n"
+        '- For every system you select, you must cite the specific "data_categories" from the inventory that justify its inclusion.\n'
+        "- If no systems match the request categories, return an empty list.\n"
         "- no markdown, no code fences, no extra keys."
     )
+
+    if system_catalog:
+        system_prompt += f"\n\n### AUTHORIZED DATA INVENTORY\n{system_catalog}\n"
     user_prompt = (
         "Given the DSAR request text and classification, propose which internal systems to query.\n\n"
         f"Classification:\n{_as_json(classification)}\n\n"
@@ -313,11 +426,13 @@ def scoping_agent_llm(state: TriageState, *, cfg: LLMNodeConfig) -> TriageState:
         return result
 
     def _llm_entry(r: ScopingResult) -> ReasoningEntry:
+        num_systems = len(r.systems)
+        base_rationale = f"Consulted the Semantic Knowledge Base (Data Inventory) to identify {num_systems} relevant systems.\n"
         return ReasoningEntry(
             agent="scoping_agent_llm",
             source="llm",
             decision_made=f"systems={r.systems}",
-            rationale=r.rationale or "LLM provided no rationale.",
+            rationale=base_rationale + (r.rationale or "LLM provided no rationale."),
         )
 
     def _fallback_entry() -> ReasoningEntry:

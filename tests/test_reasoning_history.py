@@ -168,7 +168,8 @@ class TestLLMSuccessHistory:
         assert entry.agent == "scoping_agent_llm"
         assert entry.source == "llm"
         assert "crm" in entry.decision_made
-        assert entry.rationale == "Standard deletion scope."
+        assert "Standard deletion scope." in entry.rationale
+        assert "Consulted the Semantic Knowledge Base (Data Inventory) to identify 2 relevant systems." in entry.rationale
 
     def test_risk_llm_success_adds_llm_entry(self):
         state = _deterministic_state("My child's data please.")

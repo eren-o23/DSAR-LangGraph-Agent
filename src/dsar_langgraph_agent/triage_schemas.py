@@ -97,4 +97,6 @@ class TriageOutput(BaseModel):
     human_review: Optional[HumanReviewDecision] = None
     llm_warnings: List[LLMFallbackWarning] = Field(default_factory=list)
     reasoning_history: List[ReasoningEntry] = Field(default_factory=list)
+    # Set when the episode was persisted to the LangGraph Store.
+    episode_id: Optional[str] = Field(default=None)
 

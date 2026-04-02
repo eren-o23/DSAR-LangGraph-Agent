@@ -7,10 +7,10 @@ from typing import Any, Dict, List, Optional
 
 @dataclass(frozen=True)
 class OllamaLLMConfig:
-    base_url: str = "http://localhost:11434/v1"
+    base_url: Optional[str] = "http://localhost:11434/v1"  # None → use OpenAI's default endpoint
     api_key: str = "ollama"  # required by OpenAI SDK but ignored by Ollama
     model: str = "llama3.1"
-    timeout_s: float = 30.0
+    timeout_s: float = 60.0
 
 
 class OllamaLLMError(RuntimeError):
@@ -70,10 +70,14 @@ class OllamaLLMClient:
                 "python -m pip install -r requirements/requirements.txt"
             ) from e
 
+        _kwargs: Dict[str, Any] = {}
+        if self.config.base_url is not None:
+            _kwargs["base_url"] = self.config.base_url
+
         self._client = OpenAI(
-            base_url=self.config.base_url,
             api_key=self.config.api_key,
             timeout=self.config.timeout_s,
+            **_kwargs,
         )
 
     def chat_json(

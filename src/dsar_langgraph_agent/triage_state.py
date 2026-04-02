@@ -26,5 +26,7 @@ class TriageState(TypedDict, total=False):
     llm_warnings: List[LLMFallbackWarning]
     # Ordered audit trail: one entry appended per node per execution.
     reasoning_history: List[ReasoningEntry]
+    # Set by record_episode_node after the episode is persisted.
+    episode_id: Optional[str]
     output: TriageOutput
 

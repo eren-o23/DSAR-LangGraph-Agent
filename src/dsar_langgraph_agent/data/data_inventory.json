@@ -1,0 +1,77 @@
+[
+  {
+    "id": "crm",
+    "name": "CRM",
+    "description": "Primary customer relationship management system. Holds the master identity record for every registered user, including contact details, account status, and interaction history with sales and account management teams.",
+    "data_categories": [
+      "full_name",
+      "email",
+      "phone_number",
+      "postal_address",
+      "account_id",
+      "account_status",
+      "account_creation_date",
+      "assigned_account_manager",
+      "interaction_notes"
+    ],
+    "retention_period": "7 years after account closure",
+    "legal_basis": "Legitimate interest / contractual obligation",
+    "sensitivity": "personal"
+  },
+  {
+    "id": "marketing_hub",
+    "name": "Marketing_Hub",
+    "description": "Outbound marketing automation platform. Stores consent records, campaign membership, email engagement metrics, and behavioural segments derived from website and product activity.",
+    "data_categories": [
+      "email",
+      "marketing_consent_status",
+      "consent_timestamp",
+      "campaign_memberships",
+      "email_open_history",
+      "click_through_history",
+      "behavioural_segments",
+      "unsubscribe_history"
+    ],
+    "retention_period": "3 years after last interaction or consent withdrawal",
+    "legal_basis": "Consent (GDPR Art. 6(1)(a))",
+    "sensitivity": "personal"
+  },
+  {
+    "id": "zendesk",
+    "name": "Zendesk",
+    "description": "Customer support ticketing platform. Captures all inbound support requests, agent responses, attachments, ratings, and any personal data shared by the customer during the support interaction.",
+    "data_categories": [
+      "email",
+      "full_name",
+      "ticket_id",
+      "support_ticket_content",
+      "attachments",
+      "agent_notes",
+      "satisfaction_rating",
+      "channel_of_contact",
+      "ip_address"
+    ],
+    "retention_period": "5 years after ticket closure",
+    "legal_basis": "Legitimate interest / contractual obligation",
+    "sensitivity": "personal — may contain special-category data shared by the user"
+  },
+  {
+    "id": "production_sql",
+    "name": "Production_SQL",
+    "description": "Core transactional database backing the product. Contains all user-generated content, application state, purchase records, and audit logs produced during normal product usage.",
+    "data_categories": [
+      "account_id",
+      "purchase_history",
+      "order_ids",
+      "payment_method_tokens",
+      "billing_address",
+      "product_usage_events",
+      "user_preferences",
+      "api_keys_hashed",
+      "application_audit_log"
+    ],
+    "retention_period": "7 years for financial records; 2 years for usage logs post-deletion request",
+    "legal_basis": "Contractual obligation / legal obligation (financial records)",
+    "sensitivity": "personal — includes financial identifiers"
+  }
+]

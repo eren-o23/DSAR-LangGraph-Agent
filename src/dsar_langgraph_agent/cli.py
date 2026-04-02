@@ -9,7 +9,7 @@ from rich.rule import Rule
 from rich.table import Table
 from rich import box
 
-from dsar_langgraph_agent.triage_graph import build_triage_graph
+from dsar_langgraph_agent.triage_graph import build_triage_graph, store, _EPISODE_NAMESPACE
 from dsar_langgraph_agent.triage_schemas import (
     HumanReviewDecision,
     LLMFallbackWarning,
@@ -191,6 +191,11 @@ def _print_final_summary(output: TriageOutput) -> None:
             "LLM Warnings",
             f"[yellow]{warn_len} fallback event(s) — review llm_warnings for details[/yellow]",
         )
+    if output.episode_id:
+        summary.add_row(
+            "Episode ID",
+            f"[bold cyan]{output.episode_id}[/bold cyan]  [dim](persisted to store)[/dim]",
+        )
 
     console.print()
     console.print(Rule("[bold green]  ✅  Final DSAR Triage Summary  [/bold green]", style="green"))
@@ -265,14 +270,66 @@ def main() -> int:
     parser.add_argument("--thread-id",   default="triage_cli", help="LangGraph thread id.")
     parser.add_argument("--auto-approve", action="store_true", help="Auto-approve (no prompt).")
     parser.add_argument("--use-llm",     action="store_true",  help="Use Ollama LLM agents.")
-    parser.add_argument("--model",       default="llama3.1",            help="Ollama model name.")
-    parser.add_argument("--base-url",    default="http://localhost:11434/v1", help="Ollama base URL.")
-    parser.add_argument("--api-key",     default="ollama",   help="OpenAI SDK api-key field.")
-    parser.add_argument("--reviewer",    default="human",    help="Reviewer name shown in audit.")
+    parser.add_argument("--model",       default="llama3.1",   help="Ollama model name.")
+    parser.add_argument("--base-url",    default="http://127.0.0.1:11434/v1", help="Ollama base URL.")
+    parser.add_argument("--api-key",     default="ollama",     help="OpenAI SDK api-key field.")
+    parser.add_argument("--timeout",     default=10.0, type=float, help="Seconds before LLM call times out.")
+    parser.add_argument(
+        "--openai",
+        action="store_true",
+        help="Use OpenAI API instead of Ollama (reads OPENAI_API_KEY env var). Implies --use-llm.",
+    )
+    parser.add_argument(
+        "--openai-model",
+        default="gpt-4o-mini",
+        help="OpenAI model to use when --openai is set (default: gpt-4o-mini).",
+    )
+    parser.add_argument("--reviewer",    default="human",      help="Reviewer name shown in audit.")
+    parser.add_argument("--list-episodes", action="store_true", help="Print stored episodes and exit.")
     args = parser.parse_args()
 
-    llm_config = {"model": args.model, "base_url": args.base_url, "api_key": args.api_key}
-    app    = build_triage_graph(use_llm=args.use_llm, llm_config=llm_config if args.use_llm else None)
+    # ── List stored episodes and exit ─────────────────────────────────────────
+    if args.list_episodes:
+        items = store.search(_EPISODE_NAMESPACE)
+        if not items:
+            console.print("[dim]No episodes stored yet.[/dim]")
+            return 0
+        console.print(Rule(f"[bold blue]  Stored Episodes ({len(items)})  [/bold blue]", style="blue"))
+        for item in items:
+            v = item.value
+            console.print(
+                f"  [cyan]{item.key}[/cyan]  "
+                f"type=[bold]{v.get('classification', {}).get('request_type', '?')}[/bold]  "
+                f"steps={len(v.get('reasoning_history', []))}  "
+                f"text=[dim]{str(v.get('request_text', ''))[:60]}…[/dim]"
+            )
+        return 0
+
+    if args.openai:
+        import os
+        openai_key = os.environ.get("OPENAI_API_KEY", "")
+        if not openai_key:
+            console.print(
+                "[bold red]Error:[/bold red] --openai requires the "
+                "[bold]OPENAI_API_KEY[/bold] environment variable to be set."
+            )
+            return 1
+        use_llm = True
+        llm_config = {
+            "base_url": None,          # OpenAI SDK uses https://api.openai.com/v1
+            "api_key": openai_key,
+            "model": args.openai_model,
+            "timeout_s": args.timeout,
+        }
+    else:
+        use_llm = args.use_llm
+        llm_config = {
+            "model": args.model,
+            "base_url": args.base_url,
+            "api_key": args.api_key,
+            "timeout_s": args.timeout,
+        }
+    app    = build_triage_graph(use_llm=use_llm, llm_config=llm_config if use_llm else None)
     config = {"configurable": {"thread_id": args.thread_id}}
 
     from langgraph.types import Command
